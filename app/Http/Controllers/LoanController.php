@@ -10,6 +10,7 @@ use App\Models\Reservation;
 use App\Models\SystemSetting;
 use App\Models\User;
 use Exception;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -88,19 +89,23 @@ class LoanController extends Controller
             );
         }
 
-        $copies = BookCopy::whereIn('id', $validated['copy_ids'])->get();
-
-        foreach ($copies as $copy) {
-            if (! $copy->is_available || $copy->condition_status !== 'baik') {
-                return back()->withInput()->with(
-                    'error',
-                    "Peminjaman gagal: Eksemplar dengan kode {$copy->inventory_code} tidak tersedia untuk dipinjam."
-                );
-            }
-        }
-
         try {
-            $loan = DB::transaction(function () use ($borrower, $copies) {
+            $loan = DB::transaction(function () use ($borrower, $validated) {
+                /** @var Collection<int, BookCopy> $copies */
+                $copies = BookCopy::whereIn('id', $validated['copy_ids'])
+                    ->lockForUpdate()
+                    ->get();
+
+                if ($copies->count() !== count($validated['copy_ids'])) {
+                    throw new Exception('Satu atau lebih eksemplar buku tidak valid.');
+                }
+
+                foreach ($copies as $copy) {
+                    if (! $copy->is_available || $copy->condition_status !== 'baik') {
+                        throw new Exception("Eksemplar dengan kode {$copy->inventory_code} tidak tersedia untuk dipinjam.");
+                    }
+                }
+
                 $maxBorrowDays = (int) SystemSetting::get('max_borrow_days', 7);
                 $borrowDate = now()->toDateString();
                 $dueDate = now()->addDays($maxBorrowDays)->toDateString();
@@ -135,7 +140,7 @@ class LoanController extends Controller
             return redirect()->route('loans.show', $loan)
                 ->with('success', 'Transaksi peminjaman berhasil diproses dan disimpan ke sistem.');
         } catch (Exception $e) {
-            return back()->withInput()->with('error', 'Terjadi kesalahan sistem saat memproses peminjaman: '.$e->getMessage());
+            return back()->withInput()->with('error', 'Peminjaman gagal: '.$e->getMessage());
         }
     }
 

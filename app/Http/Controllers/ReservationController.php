@@ -11,6 +11,7 @@ use App\Models\User;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 use Illuminate\View\View;
 
 class ReservationController extends Controller
@@ -65,33 +66,38 @@ class ReservationController extends Controller
             );
         }
 
-        $existingPending = Reservation::where('user_id', $user->id)
-            ->where('book_id', $book->id)
-            ->where('status', 'pending')
-            ->first();
+        $reservation = DB::transaction(function () use ($user, $book) {
+            // Lock book row to serialize queue number generation for this book
+            Book::where('id', $book->id)->lockForUpdate()->first();
 
-        if ($existingPending) {
-            return back()->with(
-                'error',
-                'Anda sudah memiliki antrean reservasi aktif untuk buku ini dengan nomor antrean #'.$existingPending->queue_number.'.'
-            );
-        }
+            $existingPending = Reservation::where('user_id', $user->id)
+                ->where('book_id', $book->id)
+                ->where('status', 'pending')
+                ->lockForUpdate()
+                ->first();
 
-        $currentMaxQueue = Reservation::where('book_id', $book->id)
-            ->where('status', 'pending')
-            ->max('queue_number') ?? 0;
+            if ($existingPending) {
+                throw new \RuntimeException(
+                    'Anda sudah memiliki antrean reservasi aktif untuk buku ini dengan nomor antrean #'.$existingPending->queue_number.'.'
+                );
+            }
 
-        $nextQueueNumber = $currentMaxQueue + 1;
-        $expiryHours = (int) SystemSetting::get('reservation_expiry_hours', 24);
-        $expirationDate = now()->addHours($expiryHours);
+            $currentMaxQueue = Reservation::where('book_id', $book->id)
+                ->where('status', 'pending')
+                ->max('queue_number') ?? 0;
 
-        $reservation = Reservation::create([
-            'user_id' => $user->id,
-            'book_id' => $book->id,
-            'queue_number' => $nextQueueNumber,
-            'expiration_date' => $expirationDate,
-            'status' => 'pending',
-        ]);
+            $nextQueueNumber = $currentMaxQueue + 1;
+            $expiryHours = (int) SystemSetting::get('reservation_expiry_hours', 24);
+            $expirationDate = now()->addHours($expiryHours);
+
+            return Reservation::create([
+                'user_id' => $user->id,
+                'book_id' => $book->id,
+                'queue_number' => $nextQueueNumber,
+                'expiration_date' => $expirationDate,
+                'status' => 'pending',
+            ]);
+        });
 
         return redirect()->route('reservations.index')
             ->with('success', 'Reservasi berhasil didaftarkan. Anda berada pada nomor antrean #'.$reservation->queue_number.'.');

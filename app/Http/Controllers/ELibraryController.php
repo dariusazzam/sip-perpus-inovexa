@@ -49,7 +49,7 @@ class ELibraryController extends Controller
         $validated = $request->validated();
 
         $file = $request->file('file');
-        $filePath = $file->store('ebooks', 'public');
+        $filePath = $file->store('ebooks', 'local');
 
         Ebook::create([
             'book_id' => $validated['book_id'],
@@ -59,7 +59,7 @@ class ELibraryController extends Controller
         ]);
 
         return redirect()->route('elibrary.index')
-            ->with('success', 'Dokumen digital E-Library berhasil diunggah.');
+            ->with('success', 'Dokumen digital E-Library berhasil diunggah secara aman.');
     }
 
     public function read(Ebook $ebook): StreamedResponse|RedirectResponse
@@ -78,7 +78,9 @@ class ELibraryController extends Controller
             }
         }
 
-        if (! Storage::disk('public')->exists($ebook->file_path)) {
+        $disk = $this->getStorageDisk($ebook->file_path);
+
+        if (! $disk->exists($ebook->file_path)) {
             abort(404, 'File dokumen tidak ditemukan pada penyimpanan server.');
         }
 
@@ -92,9 +94,6 @@ class ELibraryController extends Controller
             ];
             session()->put('reading_history', $history);
         }
-
-        /** @var FilesystemAdapter $disk */
-        $disk = Storage::disk('public');
 
         return $disk->response(
             $ebook->file_path,
@@ -119,11 +118,13 @@ class ELibraryController extends Controller
             }
         }
 
-        if (! Storage::disk('public')->exists($ebook->file_path)) {
+        $disk = $this->getStorageDisk($ebook->file_path);
+
+        if (! $disk->exists($ebook->file_path)) {
             abort(404, 'File dokumen tidak ditemukan pada server.');
         }
 
-        return Storage::disk('public')->download(
+        return $disk->download(
             $ebook->file_path,
             $ebook->book->title.'-'.$ebook->doc_type.'.pdf'
         );
@@ -138,12 +139,25 @@ class ELibraryController extends Controller
 
     public function destroy(Ebook $ebook): RedirectResponse
     {
-        if (Storage::disk('public')->exists($ebook->file_path)) {
+        if (Storage::disk('local')->exists($ebook->file_path)) {
+            Storage::disk('local')->delete($ebook->file_path);
+        } elseif (Storage::disk('public')->exists($ebook->file_path)) {
             Storage::disk('public')->delete($ebook->file_path);
         }
 
         $ebook->delete();
 
         return back()->with('success', 'Dokumen digital E-Library berhasil dihapus.');
+    }
+
+    /**
+     * Resolves the storage disk for the file, preferring private local storage.
+     */
+    protected function getStorageDisk(string $filePath): FilesystemAdapter
+    {
+        /** @var FilesystemAdapter $disk */
+        return Storage::disk('local')->exists($filePath)
+            ? Storage::disk('local')
+            : Storage::disk('public');
     }
 }
